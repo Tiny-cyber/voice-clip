@@ -2,9 +2,9 @@
 
 # voice-clip
 
-**Send text from iPhone to Mac clipboard over local WiFi**
+**iPhone voice → Mac clipboard, with voice commands**
 
-Voice input on phone → instant paste on Mac · Zero dependencies · PWA support
+Speak on phone → say "over" → paste on Mac · Zero dependencies · PWA support
 
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-green.svg)](https://nodejs.org)
 [![macOS](https://img.shields.io/badge/macOS-13%2B-blue.svg)](https://www.apple.com/macos)
@@ -16,27 +16,38 @@ Voice input on phone → instant paste on Mac · Zero dependencies · PWA suppor
 
 ---
 
-A tiny HTTP server that runs on your Mac and serves a web page to your iPhone. Type or dictate text on your phone, tap Send, and it lands in your Mac's clipboard — ready to Cmd+V.
+A tiny HTTP server on your Mac that serves a full-screen memo pad to your iPhone. Dictate text continuously using any voice keyboard — say **"over"** to send the current segment to your Mac clipboard, ready to Cmd+V. No buttons to tap, no interruptions.
 
 **Why not iCloud clipboard sync?** iCloud requires the same Apple ID on both devices. If your phone uses a different account (or you just want something faster and more reliable), voice-clip works over plain local WiFi with zero cloud dependency.
 
 ## How It Works
 
 ```
-┌─────────────┐    WiFi (HTTP POST)    ┌─────────────┐
-│   iPhone     │ ────────────────────► │     Mac      │
-│              │                        │              │
-│  Voice KB    │   { "text": "..." }   │  voice-clip  │
-│  → Web page  │ ────────────────────► │  → clipboard │
-│  → Send      │                        │  → Cmd+V     │
-└─────────────┘    ◄──── { ok: true }  └─────────────┘
+┌─────────────┐    WiFi (HTTP)    ┌─────────────┐
+│   iPhone     │ ──────────────► │     Mac      │
+│              │                  │              │
+│  Voice KB    │  say "over"     │  voice-clip  │
+│  → Memo pad  │ ──────────────► │  → clipboard │
+│  → Hands-free│                  │  → Cmd+V     │
+└─────────────┘                   └─────────────┘
 ```
 
 1. Mac runs `clipboard-server.js` on port 5678
-2. iPhone opens `http://<mac-ip>:5678` in Safari
-3. Use any voice keyboard (e.g. Doubao, iOS dictation) to input text
-4. Tap Send — text is written to Mac clipboard via `osascript`
-5. Cmd+V on Mac to paste
+2. iPhone opens `http://<mac-ip>:5678` — a full-screen memo pad
+3. Speak continuously using any voice keyboard (Doubao, iOS dictation, etc.)
+4. Say **"over"** + pause 2 seconds — the new segment is sent to Mac clipboard
+5. Keep speaking — each "over" sends only the increment since the last one
+6. Cmd+V on Mac to paste anytime
+
+## Voice Commands
+
+| Command | Effect |
+|---------|--------|
+| **over** | Send text since last "over" to Mac clipboard |
+| **clear** | Wipe all text on phone, start fresh |
+| **还原** | Undo the last clear |
+
+All commands trigger after **2 seconds of silence**. Trailing punctuation from voice input is automatically ignored.
 
 ## Quick Start
 
@@ -74,11 +85,13 @@ Then open `http://<your-mac-ip>:5678` on your iPhone.
 | Feature | Description |
 |---------|-------------|
 | **Zero dependencies** | Single Node.js file, no `npm install` needed |
+| **Voice commands** | "over" / "clear" / "还原" — all hands-free |
+| **Incremental sync** | Each "over" sends only new text, not everything |
+| **Continuous input** | Textarea never clears on "over" — voice keyboard stays active |
+| **Image upload** | Tap "+" to send photos to Mac (saved to ~/Downloads, copied to clipboard) |
 | **PWA support** | Add to home screen for native app experience |
-| **Dark theme** | Easy on the eyes, matches iOS dark mode |
-| **Send history** | Shows recent sends with timestamps |
+| **Dark theme** | Full-screen memo pad, easy on the eyes |
 | **LaunchAgent** | Auto-starts on login, auto-restarts on crash |
-| **osascript clipboard** | Works reliably from background processes (unlike `pbcopy`) |
 | **Local only** | Everything stays on your local network, nothing touches the cloud |
 
 ## File Structure
@@ -98,6 +111,10 @@ Then open `http://<your-mac-ip>:5678` on your iPhone.
 
 **Clipboard not updating on Mac?**
 - The server uses `osascript` to write clipboard. Run `osascript -e 'set the clipboard to "test"'` manually to verify it works.
+
+**"over" not triggering?**
+- Wait at least 2 seconds after saying "over"
+- Voice keyboards may add punctuation (e.g. "over.") — this is handled automatically
 
 ## License
 
