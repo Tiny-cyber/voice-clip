@@ -4,7 +4,7 @@
 
 **iPhone voice → Mac clipboard, with voice commands**
 
-Speak on phone → say "over" → paste on Mac · Zero dependencies · PWA support
+Speak on phone → say "over" → paste on Mac · Zero dependencies · One-line install
 
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-green.svg)](https://nodejs.org)
 [![macOS](https://img.shields.io/badge/macOS-13%2B-blue.svg)](https://www.apple.com/macos)
@@ -20,6 +20,18 @@ A tiny HTTP server on your Mac that serves a full-screen memo pad to your iPhone
 
 **Why not iCloud clipboard sync?** iCloud requires the same Apple ID on both devices. If your phone uses a different account (or you just want something faster and more reliable), voice-clip works over plain local WiFi with zero cloud dependency.
 
+## Install
+
+**Requirements:** macOS 13+ · Node.js 18+ · iPhone on the same WiFi
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Tiny-cyber/voice-clip/main/install.sh | bash
+```
+
+That's it. A QR code will open in your browser — scan it with your iPhone camera, then tap "Add to Home Screen". Done.
+
+> To uninstall: `curl -fsSL https://raw.githubusercontent.com/Tiny-cyber/voice-clip/main/uninstall.sh | bash`
+
 ## How It Works
 
 ```
@@ -32,12 +44,14 @@ A tiny HTTP server on your Mac that serves a full-screen memo pad to your iPhone
 └─────────────┘                   └─────────────┘
 ```
 
-1. Mac runs `clipboard-server.js` on port 5678
-2. iPhone opens `http://<mac-ip>:5678` — a full-screen memo pad
+1. Install runs the server and opens a QR code in your browser
+2. Scan the QR code with iPhone — a full-screen memo pad opens
 3. Speak continuously using any voice keyboard (Doubao, iOS dictation, etc.)
 4. Say **"over"** + pause 2 seconds — the new segment is sent to Mac clipboard
 5. Keep speaking — each "over" sends only the increment since the last one
 6. Cmd+V on Mac to paste anytime
+
+The QR code uses your Mac's `.local` hostname, so it works even if your IP address changes. You only need to scan once — after adding to home screen, the app always connects.
 
 ## Voice Commands
 
@@ -49,58 +63,28 @@ A tiny HTTP server on your Mac that serves a full-screen memo pad to your iPhone
 
 All commands trigger after **2 seconds of silence**. Trailing punctuation from voice input is automatically ignored.
 
-## Quick Start
-
-**Requirements:** macOS 13+ · Node.js 18+ · iPhone on the same WiFi network
-
-```bash
-git clone https://github.com/Tiny-cyber/voice-clip.git
-cd voice-clip
-chmod +x install.sh
-./install.sh
-```
-
-The install script will:
-- Start the server as a macOS LaunchAgent (auto-start on login, auto-restart on crash)
-- Print the URL to open on your iPhone
-
-> To uninstall: `./uninstall.sh`
-
-### Manual start (without install)
-
-```bash
-node clipboard-server.js
-```
-
-Then open `http://<your-mac-ip>:5678` on your iPhone.
-
-## Add to iPhone Home Screen (PWA)
-
-1. Open the URL in Safari on your iPhone
-2. Tap the Share button → "Add to Home Screen"
-3. Now it works like a native app — full screen, no browser UI
-
 ## Features
 
 | Feature | Description |
 |---------|-------------|
+| **One-line install** | Single curl command, QR code setup, no manual config |
 | **Zero dependencies** | Single Node.js file, no `npm install` needed |
+| **Stable connection** | Uses `.local` hostname — works even if IP changes |
 | **Voice commands** | "over" / "clear" / "还原" — all hands-free |
 | **Incremental sync** | Each "over" sends only new text, not everything |
-| **Continuous input** | Textarea never clears on "over" — voice keyboard stays active |
+| **Two-way clipboard** | Mac clipboard shows at the bottom of the phone screen |
 | **Image upload** | Tap "+" to send photos to Mac (saved to ~/Downloads, copied to clipboard) |
 | **PWA support** | Add to home screen for native app experience |
-| **Dark theme** | Full-screen memo pad, easy on the eyes |
-| **LaunchAgent** | Auto-starts on login, auto-restarts on crash |
+| **Auto-start** | LaunchAgent starts on login, restarts on crash |
 | **Local only** | Everything stays on your local network, nothing touches the cloud |
 
 ## File Structure
 
 ```
 ~/.voice-clip/
-├── clipboard-server.js     # The server
-├── clipboard-server.log    # stdout log
-└── clipboard-server.err.log # stderr log
+├── clipboard-server.js    # The server
+├── voice-clip.log         # stdout log
+└── voice-clip.err.log     # stderr log
 ```
 
 ## Troubleshooting
@@ -115,6 +99,10 @@ Then open `http://<your-mac-ip>:5678` on your iPhone.
 **"over" not triggering?**
 - Wait at least 2 seconds after saying "over"
 - Voice keyboards may add punctuation (e.g. "over.") — this is handled automatically
+
+**QR code didn't open?**
+- Open `http://localhost:5678/setup` manually in your Mac browser
+- Or just open `http://<your-mac-hostname>.local:5678` on your iPhone
 
 ## License
 
