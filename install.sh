@@ -1,15 +1,17 @@
 #!/bin/bash
 set -e
 
-# voice-clip installer
+# voice-clip installer — run with:
+#   curl -fsSL https://raw.githubusercontent.com/Tiny-cyber/voice-clip/main/install.sh | bash
+
 INSTALL_DIR="$HOME/.voice-clip"
 PLIST_NAME="com.voice-clip.plist"
 PLIST_PATH="$HOME/Library/LaunchAgents/$PLIST_NAME"
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_RAW="https://raw.githubusercontent.com/Tiny-cyber/voice-clip/main"
 
 echo "Installing voice-clip..."
 
-# Find Node.js
+# Check Node.js
 NODE_PATH=$(which node 2>/dev/null || true)
 if [ -z "$NODE_PATH" ]; then
   echo "Error: Node.js not found. Install it from https://nodejs.org"
@@ -20,9 +22,13 @@ echo "Using Node.js: $NODE_PATH"
 # Create install directory
 mkdir -p "$INSTALL_DIR"
 
-# Copy server file
-cp "$SCRIPT_DIR/clipboard-server.js" "$INSTALL_DIR/"
+# Download server file from GitHub
+echo "Downloading..."
+curl -fsSL "$REPO_RAW/clipboard-server.js" -o "$INSTALL_DIR/clipboard-server.js"
 echo "Installed to $INSTALL_DIR/"
+
+# Stop existing service if running
+launchctl unload "$PLIST_PATH" 2>/dev/null || true
 
 # Create LaunchAgent plist
 cat > "$PLIST_PATH" << EOF
@@ -62,10 +68,7 @@ cat > "$PLIST_PATH" << EOF
 </plist>
 EOF
 
-# Unload existing if running
-launchctl unload "$PLIST_PATH" 2>/dev/null || true
-
-# Load and start
+# Start service
 launchctl load "$PLIST_PATH"
 
 echo ""
