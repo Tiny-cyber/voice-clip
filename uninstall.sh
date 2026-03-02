@@ -11,7 +11,7 @@ echo "Uninstalling voice-clip..."
 if [ -f "$PLIST_PATH" ]; then
   launchctl unload "$PLIST_PATH" 2>/dev/null || true
   rm "$PLIST_PATH"
-  echo "Removed LaunchAgent"
+  echo "Stopped service and removed LaunchAgent"
 fi
 
 # Remove install directory

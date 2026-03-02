@@ -6,8 +6,11 @@ const os = require('os');
 
 const PORT = 5678;
 const SAVE_DIR = path.join(os.homedir(), 'Downloads');
+const QR_PATH = path.join(os.homedir(), '.voice-clip', 'voice-clip-qr.png');
+const QR_HOST_FILE = path.join(os.homedir(), '.voice-clip', '.qr-hostname');
+const SETUP_FLAG = path.join(os.homedir(), '.voice-clip', '.setup-complete');
 
-// Get local IP for display
+// Get local IP for fallback display
 function getLocalIP() {
   const interfaces = os.networkInterfaces();
   for (const name of Object.keys(interfaces)) {
@@ -16,6 +19,91 @@ function getLocalIP() {
     }
   }
   return '127.0.0.1';
+}
+
+// Get .local hostname (stable, doesn't change with DHCP)
+function getLocalHostname() {
+  const h = os.hostname();
+  return h.endsWith('.local') ? h : h + '.local';
+}
+
+// Generate QR code using macOS CoreImage (zero dependencies)
+function generateQR(url) {
+  const swift = [
+    'import Cocoa',
+    'import CoreImage',
+    `let data = "${url}".data(using: .utf8)!`,
+    'let filter = CIFilter(name: "CIQRCodeGenerator")!',
+    'filter.setValue(data, forKey: "inputMessage")',
+    'filter.setValue("L", forKey: "inputCorrectionLevel")',
+    'let transform = CGAffineTransform(scaleX: 10, y: 10)',
+    'let output = filter.outputImage!.transformed(by: transform)',
+    'let rep = NSBitmapImageRep(ciImage: output)',
+    'let pngData = rep.representation(using: .png, properties: [:])!',
+    `try! pngData.write(to: URL(fileURLWithPath: "${QR_PATH}"))`,
+  ].join('\n');
+  const scriptPath = '/tmp/voice-clip-qr.swift';
+  fs.writeFileSync(scriptPath, swift);
+  try {
+    execSync('swift ' + scriptPath, { timeout: 30000, stdio: 'pipe' });
+    return true;
+  } catch (e) {
+    console.log('QR code generation failed:', e.message);
+    return false;
+  }
+}
+
+// Check if QR needs (re)generation: first run, or hostname changed
+function needsSetup(hostname) {
+  if (fs.existsSync(SETUP_FLAG)) return false;
+  try {
+    const stored = fs.readFileSync(QR_HOST_FILE, 'utf8').trim();
+    return stored !== hostname || !fs.existsSync(QR_PATH);
+  } catch { return true; }
+}
+
+// Mark setup as done (called when first phone connection comes in)
+function markSetupComplete(hostname) {
+  try {
+    fs.writeFileSync(QR_HOST_FILE, hostname);
+    fs.writeFileSync(SETUP_FLAG, new Date().toISOString());
+  } catch (e) {}
+}
+
+// Setup page with QR code
+function setupHTML(phoneUrl) {
+  return `<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Voice Clip Setup</title>
+<style>
+  body {
+    background: #1a1a1a; color: #e0e0e0;
+    font-family: -apple-system, sans-serif;
+    display: flex; justify-content: center; align-items: center;
+    height: 100vh; margin: 0;
+  }
+  .container { text-align: center; }
+  h1 { font-size: 28px; margin-bottom: 24px; font-weight: 500; }
+  img {
+    width: 220px; height: 220px;
+    border-radius: 16px; background: white; padding: 12px;
+  }
+  .url {
+    margin-top: 20px; font-size: 15px; color: #888;
+    font-family: SF Mono, monospace;
+  }
+  .steps {
+    margin-top: 20px; font-size: 14px; color: #555;
+    line-height: 2;
+  }
+</style></head>
+<body><div class="container">
+  <h1>Voice Clip</h1>
+  <img src="/qr.png" alt="QR Code">
+  <div class="url">${phoneUrl}</div>
+  <div class="steps">
+    iPhone 相机扫码 → 打开链接 → 分享 → 添加到主屏幕
+  </div>
+</div></body></html>`;
 }
 
 // The web page served to iPhone
@@ -87,6 +175,32 @@ const HTML = `<!DOCTYPE html>
     -webkit-overflow-scrolling: touch;
   }
   #textInput::placeholder { color: #333; }
+  #macClipBar {
+    flex-shrink: 0;
+    flex-basis: 33vh;
+    border-top: 1px solid #333;
+    padding: 10px 16px;
+    padding-bottom: env(safe-area-inset-bottom, 10px);
+    background: #222;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  #macClipBar .label {
+    font-size: 11px;
+    color: #555;
+    margin-bottom: 4px;
+  }
+  #macClipContent {
+    font-size: 14px;
+    color: #aaa;
+    word-break: break-all;
+    user-select: all;
+    -webkit-user-select: all;
+  }
+  #macClipContent.fresh {
+    color: #4CAF50;
+    transition: color 0.3s;
+  }
   .toast {
     position: fixed;
     top: 50%;
@@ -112,6 +226,10 @@ const HTML = `<!DOCTYPE html>
   </div>
   <input type="file" id="albumInput" accept="image/*" multiple style="display:none">
   <textarea id="textInput" placeholder="说话...说 over 同步到剪贴板" autocomplete="off" autofocus></textarea>
+  <div id="macClipBar">
+    <div class="label">Mac 剪贴板 ↓（点击复制）</div>
+    <div id="macClipContent">等待中...</div>
+  </div>
   <div class="toast" id="toast"></div>
 <script>
   const input = document.getElementById('textInput');
@@ -119,7 +237,7 @@ const HTML = `<!DOCTYPE html>
   document.getElementById('addBtn').addEventListener('click', () => albumInput.click());
 
   let toastTimer = null;
-  let marker = 0; // 上次确认触发的位置
+  let marker = input.value.length; // 跳过浏览器恢复的旧内容
 
   function toast(msg) {
     const el = document.getElementById('toast');
@@ -139,7 +257,7 @@ const HTML = `<!DOCTYPE html>
   }
 
   let lastInputTime = 0;
-  let synced = false;
+  let synced = input.value.length > 0; // 有恢复内容就标记为已同步，防止重放
   let autoScroll = true;
   let undoText = '';    // clear 前的备份
   let undoMarker = 0;  // clear 前的 marker
@@ -178,7 +296,11 @@ const HTML = `<!DOCTYPE html>
     // 在原始文本中找 "over" 的位置（不依赖 cleaned 坐标）
     const overPos = raw.toLowerCase().lastIndexOf(TRIGGER);
     if (overPos < 0) return;
-    if (marker > overPos) marker = 0;
+    if (marker > overPos) {
+      // 语音输入法可能重写文本导致 marker 越界，找上一个 "over" 作为起点
+      const prevOver = raw.toLowerCase().lastIndexOf(TRIGGER, overPos - 1);
+      marker = prevOver >= 0 ? prevOver + TRIGGER.length : 0;
+    }
     // 从 marker 到 "over" 之间截取，去掉首尾标点空格
     const segment = raw.substring(marker, overPos)
       .replace(/^[\\s。，！？、；：""''.,!?;:\\-—…·\\u200B]+/, '')
@@ -192,6 +314,12 @@ const HTML = `<!DOCTYPE html>
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ text: segment })
         });
+        sentFromPhone.add(segment);
+        // keep set small, only remember last 20
+        if (sentFromPhone.size > 20) {
+          const first = sentFromPhone.values().next().value;
+          sentFromPhone.delete(first);
+        }
         toast('已同步');
       } catch (e) {
         toast('同步失败');
@@ -251,6 +379,43 @@ const HTML = `<!DOCTYPE html>
     });
   }
 
+  // Mac clipboard polling (skip content sent from this phone)
+  const macClipEl = document.getElementById('macClipContent');
+  let lastMacClip = '';
+  let sentFromPhone = new Set(); // track what we sent
+  async function pollMacClip() {
+    try {
+      const res = await fetch('/mac-clip');
+      const data = await res.json();
+      if (data.text && data.text !== lastMacClip && !sentFromPhone.has(data.text)) {
+        lastMacClip = data.text;
+        macClipEl.textContent = data.text.length > 500 ? data.text.substring(0, 500) + '...' : data.text;
+        macClipEl.classList.add('fresh');
+        setTimeout(() => macClipEl.classList.remove('fresh'), 2000);
+      }
+    } catch (e) {}
+  }
+  setInterval(pollMacClip, 2000);
+  pollMacClip();
+
+  // Tap to copy mac clipboard content
+  macClipEl.addEventListener('click', () => {
+    if (lastMacClip) {
+      navigator.clipboard.writeText(lastMacClip).then(() => {
+        toast('已复制到手机');
+      }).catch(() => {
+        // fallback for older iOS
+        const ta = document.createElement('textarea');
+        ta.value = lastMacClip;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        toast('已复制到手机');
+      });
+    }
+  });
+
   input.addEventListener('input', () => {
     onInput();
     // 始终滚到底部，防止上下跳
@@ -273,10 +438,45 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // Serve setup page with QR code
+  if (req.method === 'GET' && req.url === '/setup') {
+    const hostname = getLocalHostname();
+    const phoneUrl = `http://${hostname}:${PORT}`;
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(setupHTML(phoneUrl));
+    return;
+  }
+
+  // Serve QR code image
+  if (req.method === 'GET' && req.url === '/qr.png') {
+    try {
+      const img = fs.readFileSync(QR_PATH);
+      res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'no-cache' });
+      res.end(img);
+    } catch (e) {
+      res.writeHead(404);
+      res.end('QR not generated');
+    }
+    return;
+  }
+
   // Serve the web page
   if (req.method === 'GET' && (req.url === '/' || req.url === '/index.html')) {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end(HTML);
+    return;
+  }
+
+  // Mac clipboard → iPhone (read Mac clipboard)
+  if (req.method === 'GET' && req.url === '/mac-clip') {
+    try {
+      const clip = execSync("osascript -e 'the clipboard as text'", { encoding: 'utf8', timeout: 3000 }).trim();
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ text: clip }));
+    } catch (e) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ text: '' }));
+    }
     return;
   }
 
@@ -291,6 +491,8 @@ const server = http.createServer((req, res) => {
           execSync(`osascript -e 'set the clipboard to "${text.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n')}"'`);
           const preview = text.substring(0, 60).replace(/\n/g, '\\n');
           console.log(`[${new Date().toISOString()}] Clip: ${preview}`);
+          // First successful clip = phone connected, setup done
+          if (!fs.existsSync(SETUP_FLAG)) markSetupComplete(getLocalHostname());
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: true }));
         } else {
@@ -379,10 +581,28 @@ pb's writeObjects:{img}`;
 });
 
 server.listen(PORT, '0.0.0.0', () => {
+  const hostname = getLocalHostname();
   const ip = getLocalIP();
+  const phoneUrl = `http://${hostname}:${PORT}`;
   console.log(`voice-clip server started`);
   console.log(`Local:   http://127.0.0.1:${PORT}`);
-  console.log(`iPhone:  http://${ip}:${PORT}`);
+  console.log(`iPhone:  ${phoneUrl}`);
+  console.log(`IP:      http://${ip}:${PORT}`);
   console.log(`Files save to: ${SAVE_DIR}`);
+
+  // First run: generate QR and auto-open setup page
+  // After phone connects successfully, setup is marked done and won't auto-open again
+  const firstRun = needsSetup(hostname);
+  if (firstRun || !fs.existsSync(QR_PATH)) {
+    if (generateQR(phoneUrl)) {
+      try { fs.writeFileSync(QR_HOST_FILE, hostname); } catch (e) {}
+    }
+  }
+  if (firstRun) {
+    console.log(`\n  First run! Opening setup page...`);
+    try { execSync(`open http://localhost:${PORT}/setup`); } catch (e) {}
+  }
+  console.log(`Setup:   http://localhost:${PORT}/setup`);
+
   console.log(`\nWaiting for connections...`);
 });

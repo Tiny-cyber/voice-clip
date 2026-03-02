@@ -22,7 +22,7 @@ mkdir -p "$INSTALL_DIR"
 
 # Copy server file
 cp "$SCRIPT_DIR/clipboard-server.js" "$INSTALL_DIR/"
-echo "Installed clipboard-server.js to $INSTALL_DIR/"
+echo "Installed to $INSTALL_DIR/"
 
 # Create LaunchAgent plist
 cat > "$PLIST_PATH" << EOF
@@ -43,6 +43,8 @@ cat > "$PLIST_PATH" << EOF
     <dict>
         <key>HOME</key>
         <string>$HOME</string>
+        <key>PATH</key>
+        <string>/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin</string>
     </dict>
 
     <key>RunAtLoad</key>
@@ -52,10 +54,10 @@ cat > "$PLIST_PATH" << EOF
     <true/>
 
     <key>StandardOutPath</key>
-    <string>$INSTALL_DIR/clipboard-server.log</string>
+    <string>$INSTALL_DIR/voice-clip.log</string>
 
     <key>StandardErrorPath</key>
-    <string>$INSTALL_DIR/clipboard-server.err.log</string>
+    <string>$INSTALL_DIR/voice-clip.err.log</string>
 </dict>
 </plist>
 EOF
@@ -67,12 +69,8 @@ launchctl unload "$PLIST_PATH" 2>/dev/null || true
 launchctl load "$PLIST_PATH"
 
 echo ""
-echo "voice-clip installed and running!"
+echo "voice-clip is running!"
+echo "A QR code should open in your browser — scan it with your iPhone."
 echo ""
-
-# Get local IP
-IP=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || echo "your-mac-ip")
-echo "Open this URL on your iPhone:"
-echo "  http://$IP:5678"
-echo ""
-echo "Tip: In Safari, tap Share → Add to Home Screen for PWA experience."
+echo "After scanning, tap Share → Add to Home Screen."
+echo "That's it. The app will keep running in the background."
