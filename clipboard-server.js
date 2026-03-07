@@ -17,8 +17,11 @@ const SETUP_FLAG = path.join(os.homedir(), '.voice-clip', '.setup-complete');
 
 function setClipboardText(text) {
   if (IS_MAC) {
-    const escaped = text.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
-    execSync(`osascript -e 'set the clipboard to "${escaped}"'`);
+    // Write to temp file to avoid shell escaping issues (single quotes, etc.)
+    const escaped = text.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r');
+    const script = `set the clipboard to "${escaped}"`;
+    fs.writeFileSync('/tmp/voice-clip-set.scpt', script);
+    execSync('osascript /tmp/voice-clip-set.scpt');
   } else if (IS_WIN) {
     // Use -EncodedCommand to avoid cmd.exe breaking on " and newlines in text
     const escaped = text.replace(/'/g, "''");
