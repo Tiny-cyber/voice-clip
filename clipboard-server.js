@@ -20,9 +20,11 @@ function setClipboardText(text) {
     const escaped = text.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
     execSync(`osascript -e 'set the clipboard to "${escaped}"'`);
   } else if (IS_WIN) {
-    // PowerShell: single quotes, escape ' as ''
+    // Use -EncodedCommand to avoid cmd.exe breaking on " and newlines in text
     const escaped = text.replace(/'/g, "''");
-    execSync(`powershell -NoProfile -command "Set-Clipboard -Value '${escaped}'"`, { timeout: 5000 });
+    const psScript = `Set-Clipboard -Value '${escaped}'`;
+    const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
+    execSync(`powershell -NoProfile -EncodedCommand ${encoded}`, { timeout: 5000 });
   }
 }
 

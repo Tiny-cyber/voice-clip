@@ -45,11 +45,7 @@ echo.
 echo  To auto-start on login:
 echo    1. Press Win+R, type: shell:startup
 echo    2. Copy start.bat shortcut into that folder
-echo.
-echo  Opening setup page...
-start "" "http://localhost:5678/setup"
-
-:: Start the server
+:: Start the server (it will auto-open setup page in browser on first run)
 echo.
 echo  Starting voice-clip server...
 node "%USERPROFILE%\.voice-clip\clipboard-server.js"
