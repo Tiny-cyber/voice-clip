@@ -4,11 +4,64 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
+const IS_WIN = process.platform === 'win32';
+const IS_MAC = process.platform === 'darwin';
+
 const PORT = 5678;
 const SAVE_DIR = path.join(os.homedir(), 'Downloads');
 const QR_PATH = path.join(os.homedir(), '.voice-clip', 'voice-clip-qr.png');
 const QR_HOST_FILE = path.join(os.homedir(), '.voice-clip', '.qr-hostname');
 const SETUP_FLAG = path.join(os.homedir(), '.voice-clip', '.setup-complete');
+
+// --- Cross-platform clipboard functions ---
+
+function setClipboardText(text) {
+  if (IS_MAC) {
+    const escaped = text.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
+    execSync(`osascript -e 'set the clipboard to "${escaped}"'`);
+  } else if (IS_WIN) {
+    // PowerShell: single quotes, escape ' as ''
+    const escaped = text.replace(/'/g, "''");
+    execSync(`powershell -NoProfile -command "Set-Clipboard -Value '${escaped}'"`, { timeout: 5000 });
+  }
+}
+
+function getClipboardText() {
+  if (IS_MAC) {
+    return execSync("osascript -e 'the clipboard as text'", { encoding: 'utf8', timeout: 3000 }).trim();
+  } else if (IS_WIN) {
+    return execSync('powershell -NoProfile -command "Get-Clipboard"', { encoding: 'utf8', timeout: 5000 }).trim();
+  }
+  return '';
+}
+
+function setClipboardImage(filePath) {
+  if (IS_MAC) {
+    const escapedPath = filePath.replace(/"/g, '\\"');
+    const script = `use framework "AppKit"
+use framework "Foundation"
+set pb to current application's NSPasteboard's generalPasteboard()
+pb's clearContents()
+set imageData to current application's NSData's dataWithContentsOfFile:"${escapedPath}"
+set img to current application's NSImage's alloc()'s initWithData:imageData
+pb's writeObjects:{img}`;
+    const scriptPath = '/tmp/voice-clip-copy.scpt';
+    fs.writeFileSync(scriptPath, script);
+    execSync('osascript ' + scriptPath);
+  } else if (IS_WIN) {
+    const escapedPath = filePath.replace(/'/g, "''");
+    const ps = `Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; $img = [System.Drawing.Image]::FromFile('${escapedPath}'); [System.Windows.Forms.Clipboard]::SetImage($img); $img.Dispose()`;
+    execSync(`powershell -NoProfile -command "${ps}"`, { timeout: 10000 });
+  }
+}
+
+function openBrowser(url) {
+  if (IS_MAC) {
+    execSync(`open "${url}"`);
+  } else if (IS_WIN) {
+    execSync(`start "" "${url}"`);
+  }
+}
 
 // Get local IP for fallback display
 function getLocalIP() {
@@ -27,8 +80,9 @@ function getLocalHostname() {
   return h.endsWith('.local') ? h : h + '.local';
 }
 
-// Generate QR code using macOS CoreImage (zero dependencies)
+// Generate QR code using macOS CoreImage (zero dependencies, Mac only)
 function generateQR(url) {
+  if (!IS_MAC) return false;
   const swift = [
     'import Cocoa',
     'import CoreImage',
@@ -70,14 +124,15 @@ function markSetupComplete(hostname) {
   } catch (e) {}
 }
 
-// Setup page with QR code
-function setupHTML(phoneUrl) {
+// Setup page with QR code (or URL-only on Windows)
+function setupHTML(phoneUrl, ipUrl) {
+  const hasQR = IS_MAC;
   return `<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><title>Voice Clip Setup</title>
 <style>
   body {
     background: #1a1a1a; color: #e0e0e0;
-    font-family: -apple-system, sans-serif;
+    font-family: -apple-system, Segoe UI, sans-serif;
     display: flex; justify-content: center; align-items: center;
     height: 100vh; margin: 0;
   }
@@ -89,7 +144,11 @@ function setupHTML(phoneUrl) {
   }
   .url {
     margin-top: 20px; font-size: 15px; color: #888;
-    font-family: SF Mono, monospace;
+    font-family: SF Mono, Consolas, monospace;
+  }
+  .url-alt {
+    margin-top: 8px; font-size: 13px; color: #666;
+    font-family: SF Mono, Consolas, monospace;
   }
   .steps {
     margin-top: 20px; font-size: 14px; color: #555;
@@ -98,10 +157,13 @@ function setupHTML(phoneUrl) {
 </style></head>
 <body><div class="container">
   <h1>Voice Clip</h1>
-  <img src="/qr.png" alt="QR Code">
+  ${hasQR ? '<img src="/qr.png" alt="QR Code">' : ''}
   <div class="url">${phoneUrl}</div>
+  <div class="url-alt">${ipUrl}</div>
   <div class="steps">
-    iPhone 相机扫码 → 打开链接 → 分享 → 添加到主屏幕
+    ${hasQR
+      ? 'iPhone 相机扫码 → 打开链接 → 分享 → 添加到主屏幕'
+      : '在手机 Safari 中输入上方地址 → 分享 → 添加到主屏幕<br>如果 .local 地址连不上，试试下面的 IP 地址'}
   </div>
 </div></body></html>`;
 }
@@ -227,7 +289,7 @@ const HTML = `<!DOCTYPE html>
   <input type="file" id="albumInput" accept="image/*" multiple style="display:none">
   <textarea id="textInput" placeholder="说话...说 over 同步到剪贴板" autocomplete="off" autofocus></textarea>
   <div id="macClipBar">
-    <div class="label">Mac 剪贴板 ↓（点击复制）</div>
+    <div class="label">电脑剪贴板 ↓（点击复制）</div>
     <div id="macClipContent">等待中...</div>
   </div>
   <div class="toast" id="toast"></div>
@@ -261,11 +323,35 @@ const HTML = `<!DOCTYPE html>
   let autoScroll = true;
   let undoText = '';    // clear 前的备份
   let undoMarker = 0;  // clear 前的 marker
+  let pendingOverText = '';  // "over" 确认机制：首次检测到存快照，下次确认没变才同步
+
+  // 防丢机制：保护 textarea 内容不被输入法意外替换
+  let contentBackup = input.value;  // 已知最长文本
+  let lostChunks = [];              // 被输入法吞掉的片段
+
+  function protectContent(current) {
+    // 正常增长：更新备份
+    if (current.length >= contentBackup.length) {
+      contentBackup = current;
+      return current;
+    }
+    // 内容突然缩短超过 40%，且之前有足够内容 → 输入法替换了 textarea
+    if (contentBackup.length > 30 && current.length < contentBackup.length * 0.6) {
+      // 把之前的内容存为丢失片段
+      lostChunks.push(contentBackup);
+      contentBackup = current;
+      console.log('[protect] content drop: ' + contentBackup.length + ' → ' + current.length + ', saved chunk');
+      return current;
+    }
+    // 小幅缩短（删字、纠错）：正常更新
+    contentBackup = current;
+    return current;
+  }
 
   // 同步逻辑：从 marker 到当前 "over" 之间截取增量
   async function doSync() {
     if (synced) return;
-    if (Date.now() - lastInputTime < 2000) return;
+    if (Date.now() - lastInputTime < 1000) return;
     const raw = input.value;
     const cleaned = stripTail(raw);
     const lower = cleaned.toLowerCase();
@@ -287,11 +373,23 @@ const HTML = `<!DOCTYPE html>
       undoMarker = marker;  // 备份 marker
       input.value = '';
       marker = 0;
+      contentBackup = '';   // 重置防丢状态
+      lostChunks = [];
       toast('已清空（说"还原"可撤销）');
       return;
     }
 
-    if (!lower.endsWith(TRIGGER)) return;
+    if (!lower.endsWith(TRIGGER)) {
+      pendingOverText = '';  // 文本不以 "over" 结尾，清除待确认状态
+      return;
+    }
+    // 防误触：首次检测到 "over" 结尾 → 存快照，等下一轮(300ms)再确认
+    // 如果语音键盘把 "over" 补成 "overlay"，下一轮文本会变，就不会触发
+    if (pendingOverText !== raw) {
+      pendingOverText = raw;
+      return;
+    }
+    pendingOverText = '';  // 确认完毕，清除状态
     synced = true;
     // 在原始文本中找 "over" 的位置（不依赖 cleaned 坐标）
     const overPos = raw.toLowerCase().lastIndexOf(TRIGGER);
@@ -302,9 +400,32 @@ const HTML = `<!DOCTYPE html>
       marker = prevOver >= 0 ? prevOver + TRIGGER.length : 0;
     }
     // 从 marker 到 "over" 之间截取，去掉首尾标点空格
-    const segment = raw.substring(marker, overPos)
+    let segment = raw.substring(marker, overPos)
       .replace(/^[\\s。，！？、；：""''.,!?;:\\-—…·\\u200B]+/, '')
       .replace(/[\\s。，！？、；：""''.,!?;:\\-—…·\\u200B]+$/, '');
+
+    // 如果有被输入法吞掉的片段，拼接到前面
+    if (lostChunks.length > 0) {
+      // 从每个丢失片段中提取有效内容（去掉已同步的部分和 "over" 标记）
+      const recovered = lostChunks.map(chunk => {
+        // 找到 marker 之后、最后一个 "over" 之前的内容
+        const chunkLower = chunk.toLowerCase();
+        const lastOver = chunkLower.lastIndexOf(TRIGGER);
+        // 如果片段里有 "over"，取 over 之前未同步的部分
+        const end = lastOver >= 0 ? lastOver : chunk.length;
+        const start = Math.min(marker, end);
+        return chunk.substring(start, end)
+          .replace(/^[\\s。，！？、；：""''.,!?;:\\-—…·\\u200B]+/, '')
+          .replace(/[\\s。，！？、；：""''.,!?;:\\-—…·\\u200B]+$/, '');
+      }).filter(s => s.length > 0);
+
+      if (recovered.length > 0) {
+        segment = recovered.join('') + segment;
+        console.log('[protect] recovered ' + recovered.length + ' lost chunks, total: ' + segment.length + ' chars');
+      }
+      lostChunks = [];
+    }
+
     // marker 跳到整个 raw 末尾（包含 "over" 和后面的标点）
     marker = raw.length;
     if (segment) {
@@ -417,6 +538,7 @@ const HTML = `<!DOCTYPE html>
   });
 
   input.addEventListener('input', () => {
+    protectContent(input.value);
     onInput();
     // 始终滚到底部，防止上下跳
     setTimeout(() => { input.scrollTop = input.scrollHeight; }, 0);
@@ -438,12 +560,14 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // Serve setup page with QR code
+  // Serve setup page with QR code (or URL on Windows)
   if (req.method === 'GET' && req.url === '/setup') {
     const hostname = getLocalHostname();
+    const ip = getLocalIP();
     const phoneUrl = `http://${hostname}:${PORT}`;
+    const ipUrl = `http://${ip}:${PORT}`;
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    res.end(setupHTML(phoneUrl));
+    res.end(setupHTML(phoneUrl, ipUrl));
     return;
   }
 
@@ -467,10 +591,10 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // Mac clipboard → iPhone (read Mac clipboard)
+  // PC clipboard → iPhone (read clipboard)
   if (req.method === 'GET' && req.url === '/mac-clip') {
     try {
-      const clip = execSync("osascript -e 'the clipboard as text'", { encoding: 'utf8', timeout: 3000 }).trim();
+      const clip = getClipboardText();
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify({ text: clip }));
     } catch (e) {
@@ -488,7 +612,7 @@ const server = http.createServer((req, res) => {
       try {
         const { text } = JSON.parse(body);
         if (text && typeof text === 'string') {
-          execSync(`osascript -e 'set the clipboard to "${text.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n')}"'`);
+          setClipboardText(text);
           const preview = text.substring(0, 60).replace(/\n/g, '\\n');
           console.log(`[${new Date().toISOString()}] Clip: ${preview}`);
           // First successful clip = phone connected, setup done
@@ -544,19 +668,9 @@ const server = http.createServer((req, res) => {
         const buf = Buffer.from(data.data, 'base64');
         fs.writeFileSync(savePath, buf);
 
-        // Copy file to clipboard so Cmd+V works
+        // Copy file to clipboard so Ctrl+V / Cmd+V works
         try {
-          const escapedPath = savePath.replace(/"/g, '\\"');
-          const script = `use framework "AppKit"
-use framework "Foundation"
-set pb to current application's NSPasteboard's generalPasteboard()
-pb's clearContents()
-set imageData to current application's NSData's dataWithContentsOfFile:"${escapedPath}"
-set img to current application's NSImage's alloc()'s initWithData:imageData
-pb's writeObjects:{img}`;
-          const scriptPath = '/tmp/voice-clip-copy.scpt';
-          fs.writeFileSync(scriptPath, script);
-          execSync('osascript ' + scriptPath);
+          setClipboardImage(savePath);
         } catch (e) {
           console.log('Clipboard copy failed:', e.message);
         }
@@ -600,7 +714,7 @@ server.listen(PORT, '0.0.0.0', () => {
   }
   if (firstRun) {
     console.log(`\n  First run! Opening setup page...`);
-    try { execSync(`open http://localhost:${PORT}/setup`); } catch (e) {}
+    try { openBrowser(`http://localhost:${PORT}/setup`); } catch (e) {}
   }
   console.log(`Setup:   http://localhost:${PORT}/setup`);
 
